@@ -74,7 +74,11 @@ import * as syncMigrations from './sync/migrate';
 import { app as toolsApp } from './tools/app';
 import { withUndo, clearUndo, undo, redo } from './undo';
 import { updateVersion } from './update';
-import { uniqueFileName, idFromFileName } from './util/budget-name';
+import {
+  uniqueBudgetName,
+  idFromBudgetName,
+  validateBudgetName,
+} from './util/budget-name';
 
 const DEMO_BUDGET_ID = '_demo-budget';
 const TEST_BUDGET_ID = '_test-budget';
@@ -513,22 +517,8 @@ handlers['make-filters-from-conditions'] = async function ({ conditions }) {
 };
 
 handlers['getCell'] = async function ({ sheetName, name }) {
-  // Fields is no longer used - hardcode
-  const fields = ['name', 'value'];
   const node = sheet.get()._getNode(resolveName(sheetName, name));
-  if (fields) {
-    const res = {};
-    fields.forEach(field => {
-      if (field === 'run') {
-        res[field] = node._run ? node._run.toString() : null;
-      } else {
-        res[field] = node[field];
-      }
-    });
-    return res;
-  } else {
-    return node;
-  }
+  return { name: node.name, value: node.value };
 };
 
 handlers['getCells'] = async function ({ names }) {
@@ -1108,7 +1098,7 @@ handlers['accounts-bank-sync'] = async function ({ ids = [] }) {
 
   const accounts = await db.runQuery(
     `
-    SELECT a.*, b.bank_id as bankId 
+    SELECT a.*, b.bank_id as bankId
     FROM accounts a
     LEFT JOIN banks b ON a.bank = b.id
     WHERE a.tombstone = 0 AND a.closed = 0
@@ -1711,6 +1701,14 @@ handlers['sync'] = async function () {
   return fullSync();
 };
 
+handlers['validate-budget-name'] = async function ({ name }) {
+  return validateBudgetName(name);
+};
+
+handlers['unique-budget-name'] = async function ({ name }) {
+  return uniqueBudgetName(name);
+};
+
 handlers['get-budgets'] = async function () {
   const paths = await fs.listDir(fs.getDocumentDir());
   const budgets = (
@@ -1893,17 +1891,17 @@ handlers['delete-budget'] = async function ({ id, cloudFileId }) {
 
   // If a local file exists, you can delete it by passing its local id
   if (id) {
-    // loading and then closing the budget is a hack to be able to delete
+    // opening and then closing the database is a hack to be able to delete
     // the budget file if it hasn't been opened yet.  This needs a better
     // way, but works for now.
-    await loadBudget(id);
-    await handlers['close-budget']();
-
-    const budgetDir = fs.getBudgetDir(id);
-    if (Platform.isWeb) {
-      await removeAllBackups(id);
+    try {
+      await db.openDatabase(id);
+      await db.closeDatabase();
+      const budgetDir = fs.getBudgetDir(id);
+      await fs.removeDirRecursively(budgetDir);
+    } catch (e) {
+      return 'fail';
     }
-    await fs.removeDirRecursively(budgetDir);
   }
 
   return 'ok';
@@ -1916,37 +1914,20 @@ handlers['duplicate-budget'] = async function ({
   open,
 }): Promise<string> {
   if (!id) throw new Error('Unable to duplicate a budget that is not local.');
-  if (!newName?.trim()) {
-    throw new Error('Budget name is required and cannot be empty');
-  }
-  if (!/^[a-zA-Z0-9 .\-_()]+$/.test(newName)) {
-    throw new Error('Budget name contains invalid characters');
-  }
+
+  const { valid, message } = await validateBudgetName(newName);
+  if (!valid) throw new Error(message);
 
   const budgetDir = fs.getBudgetDir(id);
 
-  let budgetName = newName;
-  let sameName = false;
-
-  if (budgetName.indexOf(' - copy') !== -1) {
-    sameName = true;
-    budgetName = budgetName.replace(' - copy', '');
-  }
-
-  const newId = await idFromFileName(budgetName);
-
-  const budgets = await handlers['get-budgets']();
-  budgetName = await uniqueFileName(
-    budgets,
-    sameName ? budgetName + ' - copy' : budgetName,
-  );
+  const newId = await idFromBudgetName(newName);
 
   // copy metadata from current budget
   // replace id with new budget id and budgetName with new budget name
   const metadataText = await fs.readFile(fs.join(budgetDir, 'metadata.json'));
   const metadata = JSON.parse(metadataText);
   metadata.id = newId;
-  metadata.budgetName = budgetName;
+  metadata.budgetName = newName;
   [
     'cloudFileId',
     'groupId',
@@ -2028,13 +2009,10 @@ handlers['create-budget'] = async function ({
   } else {
     // Generate budget name if not given
     if (!budgetName) {
-      // Unfortunately we need to load all of the existing files first
-      // so we can detect conflicting names.
-      const files = await handlers['get-budgets']();
-      budgetName = await uniqueFileName(files);
+      budgetName = await uniqueBudgetName();
     }
 
-    id = await idFromFileName(budgetName);
+    id = await idFromBudgetName(budgetName);
   }
 
   const budgetDir = fs.getBudgetDir(id);

@@ -1,8 +1,13 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { useDispatch } from 'react-redux';
 
-import { addNotification, duplicateBudget } from 'loot-core/client/actions';
+import {
+  addNotification,
+  duplicateBudget,
+  uniqueBudgetName,
+  validateBudgetName,
+} from 'loot-core/client/actions';
 import { type File } from 'loot-core/src/types/file';
 
 import { theme } from '../../../style';
@@ -37,45 +42,40 @@ export function DuplicateFileModal({
   onComplete,
 }: DuplicateFileProps) {
   const { t } = useTranslation();
-  const [newName, setNewName] = useState(file.name + ' - copy');
+  const fileEndingTranslation = t(' - copy');
+  const [newName, setNewName] = useState(file.name + fileEndingTranslation);
   const [nameError, setNameError] = useState<string | null>(null);
 
   // If the state is "broken" that means it was created by another user.
   const isCloudFile = 'cloudFileId' in file && file.state !== 'broken';
+  const isLocalFile = 'id' in file;
   const dispatch = useDispatch();
 
   const [loadingState, setLoadingState] = useState<'cloud' | 'local' | null>(
     null,
   );
 
-  const validateNewName = (name: string): string | null => {
-    const trimmedName = name.trim();
-    if (trimmedName === '') return t('Budget name cannot be blank');
-    if (trimmedName.length > 100) {
-      return t('Budget name is too long (max length 100)');
-    }
-    if (!/^[a-zA-Z0-9 .\-_()]+$/.test(trimmedName)) {
-      return t('Budget name contains invalid characters');
-    }
-    // Additional validation checks can go here
+  useEffect(() => {
+    (async () => {
+      setNewName(await uniqueBudgetName(file.name + fileEndingTranslation));
+    })();
+  }, [file.name, fileEndingTranslation]);
 
-    return null;
-  };
-
-  const validateAndSetName = (name: string) => {
+  const validateAndSetName = async (name: string) => {
     const trimmedName = name.trim();
-    const error = validateNewName(trimmedName);
-    if (error) {
-      setNameError(error);
-    } else {
+    const { valid, message } = await validateBudgetName(trimmedName);
+    if (valid) {
       setNewName(trimmedName);
       setNameError(null);
+    } else {
+      // The "Unknown error" should never happen, but this satifies type checking
+      setNameError(message ?? t('Unknown error with budget name'));
     }
   };
 
   const handleDuplicate = async (sync: 'localOnly' | 'cloudSync') => {
-    const error = validateNewName(newName);
-    if (!error) {
+    const { valid, message } = await validateBudgetName(newName);
+    if (valid) {
       setLoadingState(sync === 'cloudSync' ? 'cloud' : 'local');
 
       try {
@@ -96,12 +96,12 @@ export function DuplicateFileModal({
         dispatch(
           addNotification({
             type: 'message',
-            message: t('Duplicate file “' + newName + '” created.'),
+            message: t('Duplicate file “{{newName}}” created.', { newName }),
           }),
         );
         if (onComplete) onComplete({ status: 'success' });
       } catch (e) {
-        const newError = new Error('Failed to duplicate budget');
+        const newError = new Error(t('Failed to duplicate budget'));
         if (onComplete) onComplete({ status: 'failed', error: newError });
         else console.error('Failed to duplicate budget:', e);
         dispatch(
@@ -114,7 +114,9 @@ export function DuplicateFileModal({
         setLoadingState(null);
       }
     } else {
-      const failError = new Error(error);
+      const failError = new Error(
+        message ?? t('Unknown error with budget name'),
+      );
       if (onComplete) onComplete({ status: 'failed', error: failError });
     }
   };
@@ -122,7 +124,7 @@ export function DuplicateFileModal({
   return (
     <Modal name="duplicate-budget">
       {({ state: { close } }) => (
-        <>
+        <View style={{ maxWidth: 700 }}>
           <ModalHeader
             title={t('Duplicate “{{fileName}}”', { fileName: file.name })}
             rightContent={
@@ -140,7 +142,6 @@ export function DuplicateFileModal({
               gap: 15,
               paddingTop: 0,
               paddingBottom: 25,
-              maxWidth: 512,
               lineHeight: '1.5em',
             }}
           >
@@ -153,7 +154,7 @@ export function DuplicateFileModal({
                 <Input
                   name="name"
                   value={newName}
-                  aria-label={t('New budget name')}
+                  aria-label={t('New Budget Name')}
                   aria-invalid={nameError ? 'true' : 'false'}
                   onChange={event => setNewName(event.target.value)}
                   onBlur={event => validateAndSetName(event.target.value)}
@@ -167,86 +168,71 @@ export function DuplicateFileModal({
               </FormError>
             )}
 
-            {isCloudFile && (
-              <>
+            {isLocalFile ? (
+              isCloudFile && (
                 <Text>
                   <Trans>
-                    Current budget is a <strong>hosted budget</strong> which
-                    means it is stored on your server to make it available for
-                    download on any device. Would you like to duplicate this
-                    budget for all devices?
+                    Your budget is hosted on a server, making it accessible for
+                    download on your devices.
+                    <br />
+                    Would you like to duplicate this budget for all your devices
+                    or keep it stored locally on this device?
                   </Trans>
                 </Text>
-
+              )
+            ) : (
+              <Text>
+                <Trans>
+                  Unable to duplicate a budget that is not located on your
+                  device.
+                  <br />
+                  Please download the budget from the server before duplicating.
+                </Trans>
+              </Text>
+            )}
+            <ModalButtons>
+              <Button
+                onPress={() => {
+                  close();
+                  if (onComplete) onComplete({ status: 'canceled' });
+                }}
+              >
+                <Trans>Cancel</Trans>
+              </Button>
+              {isLocalFile && isCloudFile && (
                 <ButtonWithLoading
                   variant={loadingState !== null ? 'bare' : 'primary'}
                   isLoading={loadingState === 'cloud'}
                   style={{
-                    alignSelf: 'center',
-                    marginLeft: 30,
-                    padding: '5px 30px',
-                    fontSize: 14,
+                    marginLeft: 10,
                   }}
                   onPress={() => handleDuplicate('cloudSync')}
                 >
-                  <Trans>Duplicate budget for all devices</Trans>
+                  <Trans>Duplicate for all devices</Trans>
                 </ButtonWithLoading>
-              </>
-            )}
-
-            {'id' in file && (
-              <>
-                {isCloudFile ? (
-                  <Text>
-                    <Trans>
-                      You can also duplicate to just the local copy. This will
-                      leave the original on the server and create a duplicate on
-                      only this device.
-                    </Trans>
-                  </Text>
-                ) : (
-                  <Text>
-                    <Trans>
-                      This is a <strong>local budget</strong> which is not
-                      stored on a server. Only a local copy will be duplicated.
-                    </Trans>
-                  </Text>
-                )}
-
-                <ModalButtons>
-                  <Button
-                    onPress={() => {
-                      close();
-                      if (onComplete) onComplete({ status: 'canceled' });
-                    }}
-                  >
-                    <Trans>Cancel</Trans>
-                  </Button>
-                  <ButtonWithLoading
-                    variant={
-                      loadingState !== null
-                        ? 'bare'
-                        : isCloudFile
-                          ? 'normal'
-                          : 'primary'
-                    }
-                    isLoading={loadingState === 'local'}
-                    style={{
-                      alignSelf: 'center',
-                      marginLeft: 30,
-                      padding: '5px 30px',
-                      fontSize: 14,
-                    }}
-                    onPress={() => handleDuplicate('localOnly')}
-                  >
-                    <Trans>Duplicate budget</Trans>
-                    {isCloudFile && <Trans> locally only</Trans>}
-                  </ButtonWithLoading>
-                </ModalButtons>
-              </>
-            )}
+              )}
+              {isLocalFile && (
+                <ButtonWithLoading
+                  variant={
+                    loadingState !== null
+                      ? 'bare'
+                      : isCloudFile
+                        ? 'normal'
+                        : 'primary'
+                  }
+                  isLoading={loadingState === 'local'}
+                  style={{
+                    marginLeft: 10,
+                  }}
+                  onPress={() => handleDuplicate('localOnly')}
+                >
+                  <Trans>Duplicate</Trans>
+                  {isCloudFile && <Trans> locally</Trans>}
+                </ButtonWithLoading>
+              )}
+            </ModalButtons>
           </View>
-        </>
+        </View>
       )}
     </Modal>
   );
