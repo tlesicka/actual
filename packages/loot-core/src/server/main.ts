@@ -1057,7 +1057,7 @@ function handleSyncResponse(
   newTransactions.push(...added);
   matchedTransactions.push(...updated);
 
-  if (added.length > 0 || updated.length > 0) {
+  if (added.length > 0) {
     updatedAccounts.push(acct.id);
   }
 }
