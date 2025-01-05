@@ -11,6 +11,7 @@ import {
   type SyncedLocalFile,
 } from 'loot-core/types/file';
 
+import { useContextMenu } from '../../hooks/useContextMenu';
 import { useMetadataPref } from '../../hooks/useMetadataPref';
 import { useNavigate } from '../../hooks/useNavigate';
 import { SvgExpandArrow } from '../../icons/v0';
@@ -60,9 +61,10 @@ function EditableBudgetName() {
   const [budgetName, setBudgetNamePref] = useMetadataPref('budgetName');
   const dispatch = useDispatch();
   const navigate = useNavigate();
-  const [menuOpen, setMenuOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const [editing, setEditing] = useState(false);
+  const { setMenuOpen, menuOpen, handleContextMenu, resetPosition, position } =
+    useContextMenu();
 
   const [id] = useMetadataPref('id');
   const allFiles = useSelector(state => state.budgets.allFiles || []);
@@ -131,7 +133,7 @@ function EditableBudgetName() {
   }
 
   return (
-    <>
+    <View onContextMenu={handleContextMenu}>
       <Button
         ref={triggerRef}
         variant="bare"
@@ -142,7 +144,10 @@ function EditableBudgetName() {
           marginLeft: -5,
           flex: '0 auto',
         }}
-        onPress={() => setMenuOpen(true)}
+        onPress={() => {
+          resetPosition();
+          setMenuOpen(true);
+        }}
       >
         <Text style={{ whiteSpace: 'nowrap', overflow: 'hidden' }}>
           {budgetName || t('A budget has no name')}
@@ -159,9 +164,11 @@ function EditableBudgetName() {
         placement="bottom start"
         isOpen={menuOpen}
         onOpenChange={() => setMenuOpen(false)}
+        style={{ margin: 1 }}
+        {...position}
       >
         <Menu onMenuSelect={onMenuSelect} items={items} />
       </Popover>
-    </>
+    </View>
   );
 }
